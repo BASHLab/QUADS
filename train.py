@@ -1,30 +1,18 @@
-import copy
 import os
-import math
-import random
 import json
-import time
-from collections import OrderedDict, defaultdict
-from typing import Union, List
-import torchaudio
-import numpy as np
+import subprocess
 import pandas as pd
-import torch
-from matplotlib import pyplot as plt
-from matplotlib.colors import ListedColormap
-from torch import nn
-from torch.optim import *
-from torch.optim.lr_scheduler import *
-from torch.utils.data import DataLoader
-from torchprofile import profile_macs
-from torchvision.datasets import *
-from torchvision.transforms import *
-from tqdm.auto import tqdm
+from tqdm import tqdm
+import torchaudio
 import whisper
-from torchprofile import profile_macs
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
 from args import get_config
 from utils.utils import save_ckpt, load_ckpt
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
 from collections import namedtuple
 from fast_pytorch_kmeans import KMeans
 from torch.nn import parameter
@@ -33,123 +21,22 @@ from torch.nn import parameter
 Codebook = namedtuple('Codebook', ['centroids', 'labels'])
 
 
+def add_intent(df, filename):
+    intent = []
+    for i in tqdm(range(df.shape[0])):
+        row = df.iloc[i]
+        action = row['action'] if row['action'] != "none" else ""
+        object = row['object'] if row['object'] != "none" else ""
+        location = row['location'] if row['location'] != "none" else ""
+        intent.append(f"{action} {object}  {location}".strip())
+    df["intent"] = intent
+    df.to_csv(f"./data/fluent_speech_commands/data/{filename}", index=False)
+
+
 def json_to_dict(file_location):
     with open(file_location, "r") as json_file:
         data_dict = json.load(json_file)
     return data_dict
-
-
-def k_means_quantize(fp32_tensor: torch.Tensor, bitwidth=4, codebook=None):
-    if codebook is None:
-        n_clusters = int(2**bitwidth)
-        kmeans = KMeans(n_clusters=n_clusters, mode='euclidean', verbose=0)
-        labels = kmeans.fit_predict(fp32_tensor.view(-1, 1)).to(torch.long)
-        centroids = kmeans.centroids.to(torch.float).view(-1)
-        codebook = Codebook(centroids, labels)
-    quantized_tensor = codebook.centroids[codebook.labels].view_as(fp32_tensor)
-    fp32_tensor.set_(quantized_tensor.view_as(fp32_tensor))
-    return codebook
-
-
-def train(
-  model: nn.Module,
-  dataloader: DataLoader,
-  criterion: nn.Module,
-  optimizer: Optimizer,
-  scheduler: LambdaLR,
-  callbacks = None
-) -> None:
-  model.train()
-
-  for inputs, targets in tqdm(dataloader, desc='train', leave=False):
-
-    inputs = inputs.cuda()
-    targets = targets.cuda()
-
-
-    optimizer.zero_grad()
-
-
-    _, outputs = model(inputs)
-    loss = criterion(outputs, targets)
-
-
-    loss.backward()
-
-
-    optimizer.step()
-    scheduler.step()
-
-    if callbacks is not None:
-        for callback in callbacks:
-            callback()
-
-
-def evaluate(
-  model: nn.Module,
-  dataloader: DataLoader,
-  verbose=True
-  ) -> float:
-  model.eval()
-  gt = []
-  preds = []
-  for inputs, targets in tqdm(dataloader, desc="eval", leave=False,
-                              disable=not verbose):
- 
-    inputs = inputs.cuda()
-    targets = targets.cuda()
- 
-    gt.append(targets)
-    with torch.no_grad():
-        _, outputs = model(inputs)
-
- 
-    preds.append(outputs)
-  preds = torch.cat(preds, dim=0)
-  gt = torch.cat(gt, dim=0)
-  preds = torch.argmax(preds, axis=1)
-  gt = gt.to("cpu")
-  preds = preds.to("cpu")
-  accuracy = round(accuracy_score(y_true=gt, y_pred=preds), 4)
-  precision = round(precision_score(y_true=gt, y_pred=preds, average="macro"), 4)
-  recall = round(recall_score(y_true=gt, y_pred=preds, average="macro"), 4)
-  f1 = round(f1_score(y_true=gt, y_pred=preds, average="macro"), 4)
-  print(f"Accuracy: {accuracy}% | Precission: {precision} |  Recall: {recall} |F-1 Score: {f1}")
-  return accuracy
-
-
-
-def get_model_macs(model, inputs) -> int:
-    return profile_macs(model, inputs)
-
-
-def get_sparsity(tensor: torch.Tensor) -> float:
-
-    return 1 - float(tensor.count_nonzero()) / tensor.numel()
-
-
-def get_model_sparsity(model: nn.Module) -> float:
-
-    num_nonzeros, num_elements = 0, 0
-    for param in model.parameters():
-        num_nonzeros += param.count_nonzero()
-        num_elements += param.numel()
-    return 1 - float(num_nonzeros) / num_elements
-
-def get_num_parameters(model: nn.Module, count_nonzero_only=False) -> int:
-
-    num_counted_elements = 0
-    for param in model.parameters():
-        if count_nonzero_only:
-            num_counted_elements += param.count_nonzero()
-        else:
-            num_counted_elements += param.numel()
-    return num_counted_elements
-
-
-def get_model_size(model: nn.Module, data_width=32, count_nonzero_only=False) -> int:
-
-    return get_num_parameters(model, count_nonzero_only) * data_width
 
 
 class FSC:
@@ -160,7 +47,6 @@ class FSC:
         self.data_root_dir = "./data/fluent_speech_commands"
         self.loader_type = loader_type
         self.meta_data_dir = os.path.join(self.data_root_dir, f"data/{self.loader_type}_data.csv")
-        print(self.meta_data_dir)
         self.meta_df = pd.read_csv(self.meta_data_dir)
         self.filenames = self.meta_df["path"].to_list()
         self.intents = self.meta_df["intent"].to_list()
@@ -218,6 +104,40 @@ class WhisperBaselineModel(nn.Module):
         return z, intent
 
 
+class TeacherModel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = whisper.load_model("large").encoder
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        self.pool = nn.MaxPool1d(kernel_size=3, stride=2, dilation=128)
+
+    def forward(self, x):
+        x = self.encoder(x)
+        x = self.pool(x)
+        x = torch.mean(x, 1)
+        return x
+
+
+
+
+def json_to_dict(file_location):
+    with open(file_location, "r") as json_file:
+        data_dict = json.load(json_file)
+    return data_dict
+
+
+def k_means_quantize(fp32_tensor: torch.Tensor, bitwidth=4, codebook=None):
+    if codebook is None:
+        n_clusters = int(2**bitwidth)
+        kmeans = KMeans(n_clusters=n_clusters, mode='euclidean', verbose=0)
+        labels = kmeans.fit_predict(fp32_tensor.view(-1, 1)).to(torch.long)
+        centroids = kmeans.centroids.to(torch.float).view(-1)
+        codebook = Codebook(centroids, labels)
+    quantized_tensor = codebook.centroids[codebook.labels].view_as(fp32_tensor)
+    fp32_tensor.set_(quantized_tensor.view_as(fp32_tensor))
+    return codebook
+
 def update_codebook(fp32_tensor: torch.Tensor, codebook: Codebook):
 
     n_clusters = codebook.centroids.numel()
@@ -254,66 +174,137 @@ class KMeansQuantizer:
         return codebook
 
 
-def main():
-    Byte = 8
-    KiB = 1024 * Byte
-    MiB = 1024 * KiB
-    GiB = 1024 * MiB
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = WhisperBaselineModel().to(device)
-    model.load_state_dict(
-        torch.load("path/to/model", map_location="cpu")["model"]
+def quantization_phase(model, loader, callbacks, it, writer, epoch, max_epoch, num_epochs=3):
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, num_epochs)
+    criterion = nn.CrossEntropyLoss()
+    model.train()
+    for inputs, targets in tqdm(loader, desc=f"Quantization: {epoch + 1}/{max_epoch}"):
+        inputs = inputs.cuda()
+        targets = targets.cuda()
+        optimizer.zero_grad()
+        _, outputs = model(inputs)
+        loss = criterion(outputs, targets)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+        if callbacks is not None:
+            for callback in callbacks:
+                callback()
+        writer.add_scalar("Loss/CE Loss", loss.item(), it)
+        it += 1
+    return model, it
+
+
+def main(config):
+    output = subprocess.check_output("nvidia-smi", shell=True)
+    output = output.decode("utf-8")
+    print(output)
+    print("\n\n\n")
+    batch_size = 32
+    dataset = FSC(loader_type=config.mode)
+    loader = load_data(dataset=dataset, batch_size=batch_size, shuffle=config.shuffle)
+    
+    model = WhisperBaselineModel().to(device=config.device)
+    if config.start_from != 0:
+        load_ckpt(model=model, config=config)
+    loss_fn = nn.CrossEntropyLoss()
+    l1_loss = nn.L1Loss()
+    optimizer = optim.Adam(
+        [
+            {"params": model.encoder.parameters(), "lr": 1e-5},
+            {"params": model.intent_classifier.parameters(), "lr": 1e-3},
+        ]
     )
-    dataset = FSC(loader_type="train")
-    train_loader = load_data(dataset=dataset, batch_size=32, shuffle=True)
-    dataset = FSC(loader_type="test")
-    test_loader = load_data(dataset=dataset, batch_size=32, shuffle=False)
-    fp32_model_accuracy = evaluate(model, test_loader)
-    dense_model_size = get_model_size(model)
-    print(f"dense model has size={dense_model_size/MiB:.2f} MiB")
-    quantizers = dict()
-    for bitwidth in [8, 4, 2]:
-        model.load_state_dict(torch.load("path/to/model", map_location="cpu")["model"])
-        print(f'k-means quantizing model into {bitwidth} bits')
-        quantizer = KMeansQuantizer(model, bitwidth)
-        quantized_model_size = get_model_size(model, bitwidth)
-        print(f"    {bitwidth}-bit k-means quantized model has size={quantized_model_size/MiB:.2f} MiB")
-        evaluate(model, test_loader)
-        quantizers[bitwidth] = quantizer
-    accuracy_drop_threshold = 0.5
-    quantizers_before_finetune = copy.deepcopy(quantizers)
-    quantizers_after_finetune = quantizers
-    for bitwidth in [8, 4, 2]:
-        model.load_state_dict(torch.load("path/to/model", map_location="cpu")["model"])
-        quantizer = quantizers[bitwidth]
-        print(f'k-means quantizing model into {bitwidth} bits')
-        quantizer.apply(model, update_centroids=False)
-        quantized_model_size = get_model_size(model, bitwidth)
-        print(f"    {bitwidth}-bit k-means quantized model has size={quantized_model_size/MiB:.2f} MiB")
-        quantized_model_accuracy = evaluate(model, test_loader)
-        print(f"    {bitwidth}-bit k-means quantized model has accuracy={quantized_model_accuracy:.2f}% before quantization-aware training ")
-        accuracy_drop = fp32_model_accuracy - quantized_model_accuracy
-        if accuracy_drop > accuracy_drop_threshold:
-            print(f"        Quantization-aware training due to accuracy drop={accuracy_drop:.2f}% is larger than threshold={accuracy_drop_threshold:.2f}%")
-            num_finetune_epochs = 5
-            optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, num_finetune_epochs)
-            criterion = nn.CrossEntropyLoss()
-            best_accuracy = 0
-            epoch = num_finetune_epochs
-            while accuracy_drop > accuracy_drop_threshold and epoch > 0:
-                train(model, train_loader, criterion, optimizer, scheduler,
-                    callbacks=[lambda: quantizer.apply(model, update_centroids=True)])
-                model_accuracy = evaluate(model, test_loader)
-                is_best = model_accuracy > best_accuracy
-                best_accuracy = max(model_accuracy, best_accuracy)
-                print(f'        Epoch {num_finetune_epochs-epoch} Accuracy {model_accuracy:.2f}% / Best Accuracy: {best_accuracy:.2f}%')
-                accuracy_drop = fp32_model_accuracy - best_accuracy
-                epoch -= 1
-        else:
-            print(f"        No need for quantization-aware training since accuracy drop={accuracy_drop:.2f}% is smaller than threshold={accuracy_drop_threshold:.2f}%")
+    max_epoch = 20
+    bitwidth = 8
+    quantizer = KMeansQuantizer(model, bitwidth)
+    teacher = TeacherModel().to(device=config.device)
+    distilattion = [1, 2, 3, 7, 8, 9, 10, 11, 12]
+    quantization = [4, 5, 6, 13, 14, 15]
+    alpha = 1e-6 
+    if config.mode == "train":
+        writer = SummaryWriter(log_dir=os.path.join(config.config_path, f"training_restarted_at_epoch_{config.start_from}"))
+        it = 0
+        for epoch in range(config.start_from, max_epoch):
+            if (epoch+1) in distilattion:
+                for feature, intent in tqdm(loader, desc=f"Distillation: {epoch+1} / {max_epoch}"):
+                    optimizer.zero_grad()
+                    feature = feature.to(config.device)
+                    intent = intent.to(config.device)
+                    with torch.no_grad():
+                        teacher_out = teacher(feature)
+                    student_out, intent_pred = model(feature)
+                    l1 = l1_loss(teacher_out, student_out)
+                    ce = loss_fn(intent_pred, intent)
+                    # loss = loss_fn(intent_pred, intent)
+                    loss = alpha*l1 + ce
+                    loss.backward()
+                    optimizer.step()
+                    writer.add_scalar("Loss/CE Loss", ce.item(), it)
+                    writer.add_scalar("Loss/L1 Loss", l1.item(), it)
+                    writer.add_scalar("Loss/Total Loss", loss.item(), it)
+                    it += 1
+            else:
+                model, it = quantization_phase(
+                    model, 
+                    loader, 
+                    writer=writer, 
+                    it=it,
+                    epoch=epoch,
+                    max_epoch=max_epoch,
+                    callbacks=[lambda: quantizer.apply(model, update_centroids=True)]
+                )
+            save_ckpt(
+                epoch=epoch+1,
+                model=model,
+                config=config
+            )
+    else:
+        model = load_ckpt(model=model, config=config)
+        model = model.to(device=config.device)
+        model.eval()
+        preds = []
+        gt = []
+        for feature, intent in tqdm(loader, desc=f"Evaluating"):
+            feature = feature.to(config.device)
+            with torch.no_grad():
+                _, intent_pred = model(feature)
+                gt.append(intent)
+                preds.append(intent_pred)
+        preds = torch.cat(preds, dim=0)
+        gt = torch.cat(gt, dim=0)
+        preds = torch.argmax(preds, axis=1)
+        gt = gt.to("cpu")
+        preds = preds.to("cpu")
+        accuracy = round(accuracy_score(y_true=gt, y_pred=preds), 4)
+        precision = round(precision_score(y_true=gt, y_pred=preds, average="macro"), 4)
+        recall = round(recall_score(y_true=gt, y_pred=preds, average="macro"), 4)
+        f1 = round(f1_score(y_true=gt, y_pred=preds, average="macro"), 4)
+        txt_file_name = f"evaluation_report{config.ckpt_name}.txt"
+        with open(os.path.join(config.log_dir, txt_file_name), "a") as file:
+            print(f"Accuracy: {accuracy}", file=file)
+            print(f"Precision: {precision}", file=file)
+            print(f"Recall: {recall}", file=file)
+            print(f"F1-Score: {f1}", file=file)
+            print("="*25, file=file)
+            print("\n\n\n", file=file)
+            print(
+                classification_report(y_true=gt, y_pred=preds),
+                file=file
+            )
+        file.close()
+        
+
+def teacher_test():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    x = torch.randn(2, 80, 3000).to(device)
+    teacher = TeacherModel().to(device)
+    y = teacher(x)
+    print(teacher)
+    print(y.shape)
 
 
 if __name__ == "__main__":
-    main()
-    
+    config = get_config()
+    main(config)
