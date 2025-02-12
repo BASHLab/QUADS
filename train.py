@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.optim as optim
 from torch.utils.tensorboard import SummaryWriter
 from args import get_config
-from utils.utils import save_ckpt, load_ckpt
+from utils import save_ckpt, load_ckpt
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
 from collections import namedtuple
 from fast_pytorch_kmeans import KMeans
