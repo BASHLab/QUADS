@@ -26,7 +26,7 @@ pip install -r requirements.txt
 python train.py
 ```
 
-## Ciitation
+## Citation
 ```
 Coming Soon
 ```
