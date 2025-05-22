@@ -1,0 +1,53 @@
+# Build and Release Folders
+bin-debug/
+bin-release/
+[Oo]bj/
+[Bb]in/
+
+# Other files and folders
+.settings/
+venv/
+.ipynb_checkpoints/
+.vscode/
+.idea/
+__pycache__/
+pretrained_ckpts/
+
+
+data/
+log/
+
+
+
+# Executables
+*.swf
+*.air
+*.ipa
+*.apk
+*.pth
+*.csv
+*.xlsx
+*.zip
+*.h5
+*.out
+
+# Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
+# should NOT be excluded as they contain compiler settings and other important
+# information for Eclipse / Flash Builder.
+package-lock.json
+
+staticfiles/*
+!staticfiles/.gitkeep
+.vscode/symbols.json
+
+apps/static/assets/node_modules
+apps/static/assets/yarn.lock
+apps/static/assets/.temp
+
+.DS_Store
+*.db
+*.sqlite3
+*.log
+*.pytest_cache
+.coverage
+*.tar.gz
