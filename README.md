@@ -28,5 +28,10 @@ python train.py
 
 ## Citation
 ```
-Coming Soon
+@article{biswas2025quads,
+  title={QUADS: QUAntized Distillation Framework for Efficient Speech Language Understanding},
+  author={Biswas, Subrata and Khan, Mohammad Nur Hossain and Islam, Bashima},
+  journal={arXiv preprint arXiv:2505.14723},
+  year={2025}
+}
 ```
