@@ -29,9 +29,12 @@ python train.py
 ## Citation
 ```
 @article{biswas2025quads,
-  title={QUADS: QUAntized Distillation Framework for Efficient Speech Language Understanding},
-  author={Biswas, Subrata and Khan, Mohammad Nur Hossain and Islam, Bashima},
-  journal={arXiv preprint arXiv:2505.14723},
-  year={2025}
+@inproceedings{biswas25b_interspeech,
+  title     = {{QUADS: Quantized Distillation Framework for Efficient Speech Language Understanding}},
+  author    = {{Subrata Biswas and Mohammad Nur Hossain Khan and Bashima Islam}},
+  year      = {{2025}},
+  booktitle = {{Interspeech 2025}},
+  pages     = {{4098--4102}},
+  doi       = {{10.21437/Interspeech.2025-532}},
 }
 ```
